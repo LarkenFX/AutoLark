@@ -192,22 +192,46 @@ class Larky:
         return order
 
     @staticmethod
-    def find_colors(left, top, width, height, target_color, tolerance=COLOR_TOLERANCE, find_all=False):
+    def find_colors(
+        left, top, width, height,
+        target_color,
+        tolerance=2
+    ):
         with mss.mss() as sct:
             monitor = {"left": left, "top": top, "width": width, "height": height}
             try:
                 img = np.array(sct.grab(monitor))
             except mss.exception.ScreenShotError:
-                return [] if find_all else None
+                return None
+
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
+
             diff = np.abs(img - target_color)
             mask = np.all(diff <= tolerance, axis=2)
+
             ys, xs = np.where(mask)
+
             if len(xs) == 0:
-                return [] if find_all else None
-            if not find_all:
-                return (left + xs[0], top + ys[0])
-            return [(left + x, top + y) for y, x in zip(ys, xs)]
+                return None
+
+            # centroid
+            cx = np.mean(xs)
+            cy = np.mean(ys)
+
+            sigma = min(width, height) * 0.2
+
+            # gaussian sampling
+            for _ in range(50):
+                x = int(np.random.normal(cx, sigma))
+                y = int(np.random.normal(cy, sigma))
+
+                if 0 <= x < width and 0 <= y < height:
+                    if mask[y, x]:
+                        return (left + x, top + y)
+
+            # fallback (rare)
+            idx = np.random.randint(len(xs))
+            return (left + xs[idx], top + ys[idx])
 
     @staticmethod
     def color_exists(region, color, tolerance=COLOR_TOLERANCE):
