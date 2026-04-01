@@ -17,7 +17,7 @@ def on_press(key):
 listener = keyboard.Listener(on_press=on_press)
 listener.start()
 
-time.sleep(2)  # Give user time to switch
+time.sleep(2)  # Give user time to switch 
 
 # Initialize bot
 bot = Larky()
