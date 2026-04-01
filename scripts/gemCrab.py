@@ -51,7 +51,7 @@ while True:
         bot.click_pos(*pos)
     
     bot.wait_for(lambda: bot.find_colors(*gamebox, CRAB) is None)
-    bot.break_delay(chance=1, min_delay=40, max_delay=100, weight=1)
+    bot.break_delay(chance=1, min_delay=40, max_delay=100, weight=0.3)
 
     pos = bot.find_colors(*gamebox, CAVE)
     if pos:

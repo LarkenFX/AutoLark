@@ -34,12 +34,12 @@ IDLE = bot.hex_to_rgb(IDLE_HEX)
 
 # Define images
 DEPOSIT_IMAGE = "deposit"
-FULL_IMAGE = "full"
+IRONWOOD_IMAGE = "ironwood"
 images_dir = "/home/larken/AutoLark/images"
 
 # Generate full paths once
 deposit_path = os.path.join(images_dir, f"{DEPOSIT_IMAGE}.png")
-full_path = os.path.join(images_dir, f"{FULL_IMAGE}.png")
+ironwood_path = os.path.join(images_dir, f"{IRONWOOD_IMAGE}.png")
 
 # Regions
 gamebox = bot.gamebox
@@ -64,8 +64,9 @@ while True:
         pos = bot.wait_for(lambda: bot.find_colors(*gamebox, TREES))
         if pos:
             bot.click_pos(*pos)
-        bot.break_delay(chance=0.68, min_delay=5, max_delay=7, weight=1.2)
+        bot.break_delay(chance=1, min_delay=5, max_delay=700, weight=.008)
         # check idle
         bot.wait_for(lambda: bot.find_colors(*gamebox, IDLE) is None)
-        if bot.locate_image(invent, full_path):
+        if bot.invent_check(ironwood_path):
+            bot.break_delay(chance=1, min_delay=.8, max_delay=3700, weight=.008)
             break
