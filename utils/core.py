@@ -258,56 +258,41 @@ class Larky:
                 img = np.array(sct.grab(monitor))
             except mss.exception.ScreenShotError:
                 return None
-
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
-
             # Build mask
             diff = np.abs(img - target_color)
             mask = np.all(diff <= tolerance, axis=2).astype(np.uint8)
-
             if not np.any(mask):
                 return None
-
             # --- Step 1: isolate largest blob (important for multiple objects)
             num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-
             if num_labels <= 1:
                 return None
-
             largest = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
             blob = (labels == largest).astype(np.uint8)
-
             # --- Step 2: distance transform (distance from edge)
             dist = cv2.distanceTransform(blob, cv2.DIST_L2, 5)
             max_dist = dist.max()
-
             # --- Step 3: handle thin / bad shapes safely
             if max_dist < 2:
                 ys, xs = np.where(blob)
                 idx = np.random.randint(len(xs))
                 return (left + xs[idx], top + ys[idx])
-
             # --- Step 4: pick from top interior pixels (not just 1 point)
             flat = dist.flatten()
-
             # Top N deepest pixels (adaptive)
             top_n = min(40, len(flat))
             indices = np.argpartition(flat, -top_n)[-top_n:]
-
             # Weighted randomness (favor deeper pixels)
             weights = flat[indices]
             weights = weights / (weights.sum() + 1e-6)
-
             choice = np.random.choice(indices, p=weights)
             y, x = np.unravel_index(choice, dist.shape)
-
             # --- Step 5: tiny human-like jitter
             x += int(np.random.normal(0, 1.5))
             y += int(np.random.normal(0, 1.5))
-
             x = np.clip(x, 0, width - 1)
             y = np.clip(y, 0, height - 1)
-
             return (left + x, top + y)
 
     @staticmethod
@@ -346,12 +331,39 @@ class Larky:
                 return (left + tx + tw//2, top + ty + th//2)
             return None
 
-    def find_image(self, region, image_name, threshold=0.8, click=False):
-        image_path = os.path.join(".images", f"{image_name}.png")
+    def find_image(self, region, image_path, threshold=0.8, click=False):
         pos = self.locate_image(region, image_path, threshold)
         if pos and click:
             self.click_pos(*pos)
         return pos
+    
+    def check_inventory(self, region, image_path, threshold=0.9, dedupe_dist=12):
+        with mss.mss() as sct:
+            left, top, width, height = region
+            monitor = {"left": left, "top": top, "width": width, "height": height}
+
+            screen = np.array(sct.grab(monitor))
+            screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGRA2GRAY)
+
+            template = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+            if template is None:
+                raise FileNotFoundError(f"Image not found: {image_path}")
+
+            res = cv2.matchTemplate(screen_gray, template, cv2.TM_CCOEFF_NORMED)
+
+            ys, xs = np.where(res >= threshold)
+            points = list(zip(xs, ys))
+
+            # --- Deduplicate matches (prevents overcount spam)
+            filtered = []
+            for (x, y) in points:
+                for (fx, fy) in filtered:
+                    if abs(x - fx) < dedupe_dist and abs(y - fy) < dedupe_dist:
+                        break
+                else:
+                    filtered.append((x, y))
+
+            return len(filtered)
 
     # ==============================
     # Inventory Utilities
@@ -372,3 +384,20 @@ class Larky:
                     self.click_pos(pos[0] + random.randint(-2, 2),
                                    pos[1] + random.randint(-2, 2))
                     time.sleep(random.uniform(*CLICK_DELAY_RANGE))
+
+    def invent_check(self, image_path):
+        count = self.check_inventory(self.invent, image_path)
+
+        # --- Conservative logic ---
+        if count >= 28:
+            return True
+
+        # --- Safety net: slightly lower confidence but still likely full
+        if count >= 27:
+            # double-check quickly to avoid rare false positives
+            time.sleep(0.05)
+            count2 = self.check_inventory(self.invent, image_path)
+            if count2 >= 26:
+                return True
+
+        return False
