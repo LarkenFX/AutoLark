@@ -130,37 +130,96 @@ class Larky:
         Larky.run_cmd(["xdotool", "mousemove", str(int(x)), str(int(y))])
 
     @staticmethod
-    def smooth_move(x1, y1, x2, y2, steps=None, duration=None, k=12, jitter=3):
+    def smooth_move(x1, y1, x2, y2, steps=None, duration=None):
         dx, dy = x2 - x1, y2 - y1
         dist = math.hypot(dx, dy)
+
+        # --- Step count based on distance
         if steps is None:
-            steps = 10 if dist < 30 else 18 if dist < 100 else 28 if dist < 200 else 35
+            steps = 14 if dist < 40 else 20 if dist < 120 else 30 if dist < 250 else 40
+
+        # --- Duration scaling (fixes fast long moves)
         if duration is None:
-            duration = steps * random.uniform(0.009, 0.014)
-        ox, oy = random.uniform(-jitter, jitter), random.uniform(-jitter, jitter)
-        for i in range(1, steps+1):
+            speed_mult = 0.35
+            base = steps * random.uniform(0.009, 0.013)
+            dist_factor = (dist / 220) ** 0.65
+            duration = base * (1 + dist_factor) * speed_mult
+
+        # --- Curve strength (less aggressive on long moves)
+        k = 10 + min(dist / 180, 1.5) * 3
+
+        # --- Small perpendicular curve (human arc)
+        perp_x = -dy / (dist + 1e-6)
+        perp_y = dx / (dist + 1e-6)
+        curve_strength = random.uniform(-3, 3) * min(1, dist / 150)
+
+        # --- Optional slight overshoot (only for longer moves)
+        overshoot = 0
+        if dist > 80 and random.random() < 0.7:
+            overshoot = random.uniform(3, 8)
+
+        target_x = x2 + (dx / (dist + 1e-6)) * overshoot
+        target_y = y2 + (dy / (dist + 1e-6)) * overshoot
+
+        # --- Main movement
+        for i in range(1, steps + 1):
             t = i / steps
+
+            # Sigmoid easing (smooth accel/decel)
             s = 1 / (1 + math.exp(-k * (t - 0.5)))
-            Larky.move_mouse_abs(x1 + dx * s + ox * (1-s), y1 + dy * s + oy * (1-s))
+
+            # Base path
+            mx = x1 + (target_x - x1) * s
+            my = y1 + (target_y - y1) * s
+
+            # Add slight curve
+            curve = math.sin(t * math.pi) * curve_strength
+            mx += perp_x * curve
+            my += perp_y * curve
+
+            # Tiny jitter (reduced near end)
+            jitter_scale = (1 - t)
+            mx += random.uniform(-1.2, 1.2) * jitter_scale
+            my += random.uniform(-1.2, 1.2) * jitter_scale
+
+            Larky.move_mouse_abs(mx, my)
             time.sleep(duration / steps)
-        # Micro-correction
-        x1c, y1c = Larky.get_mouse_pos()
-        dx, dy = x2 - x1c, y2 - y1c
+
+        # --- Final correction phase (ENSURES EXACT TARGET)
+        x_curr, y_curr = Larky.get_mouse_pos()
+        dx, dy = x2 - x_curr, y2 - y_curr
         dist = math.hypot(dx, dy)
-        if dist > 1:
+
+        if dist > 0:
             micro_steps = 6 if dist < 10 else 10
-            micro_duration = 0.03 if dist < 10 else 0.045
-            for i in range(1, micro_steps+1):
+            micro_duration = 0.04 if dist < 10 else 0.06
+
+            for i in range(1, micro_steps + 1):
                 t = i / micro_steps
-                s = 1 / (1 + math.exp(-k*(t-0.5)))
-                Larky.move_mouse_abs(x1c + dx*s, y1c + dy*s)
-                time.sleep(micro_duration/micro_steps)
+                s = 1 / (1 + math.exp(-10 * (t - 0.5)))
+
+                mx = x_curr + dx * s
+                my = y_curr + dy * s
+
+                Larky.move_mouse_abs(mx, my)
+                time.sleep(micro_duration / micro_steps)
 
     @staticmethod
-    def click_pos(x, y, ox=3, oy=5, button='1'):
+    def click_pos(x, y, ox=1, oy=2, button='1'):
         x1, y1 = Larky.get_mouse_pos()
-        x2, y2 = x + ox, y + oy
-        Larky.smooth_move(x1, y1, x2, y2, steps=random.randint(16,30), k=random.randint(10,16))
+
+        # Move to true target first
+        Larky.smooth_move(x1, y1, x, y)
+
+        # Apply small human-like final adjustment
+        final_x = x + random.randint(-ox, ox)
+        final_y = y + random.randint(-oy, oy)
+
+        Larky.move_mouse_abs(final_x, final_y)
+
+        # Tiny hesitation (very human)
+        time.sleep(random.uniform(0.01, 0.03))
+
         Larky.run_cmd(["xdotool", "click", button])
 
     @staticmethod
@@ -192,11 +251,7 @@ class Larky:
         return order
 
     @staticmethod
-    def find_colors(
-        left, top, width, height,
-        target_color,
-        tolerance=2
-    ):
+    def find_colors(left, top, width, height, target_color, tolerance=5):
         with mss.mss() as sct:
             monitor = {"left": left, "top": top, "width": width, "height": height}
             try:
@@ -206,32 +261,54 @@ class Larky:
 
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
 
+            # Build mask
             diff = np.abs(img - target_color)
-            mask = np.all(diff <= tolerance, axis=2)
+            mask = np.all(diff <= tolerance, axis=2).astype(np.uint8)
 
-            ys, xs = np.where(mask)
-
-            if len(xs) == 0:
+            if not np.any(mask):
                 return None
 
-            # centroid
-            cx = np.mean(xs)
-            cy = np.mean(ys)
+            # --- Step 1: isolate largest blob (important for multiple objects)
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
 
-            sigma = min(width, height) * 0.2
+            if num_labels <= 1:
+                return None
 
-            # gaussian sampling
-            for _ in range(50):
-                x = int(np.random.normal(cx, sigma))
-                y = int(np.random.normal(cy, sigma))
+            largest = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+            blob = (labels == largest).astype(np.uint8)
 
-                if 0 <= x < width and 0 <= y < height:
-                    if mask[y, x]:
-                        return (left + x, top + y)
+            # --- Step 2: distance transform (distance from edge)
+            dist = cv2.distanceTransform(blob, cv2.DIST_L2, 5)
+            max_dist = dist.max()
 
-            # fallback (rare)
-            idx = np.random.randint(len(xs))
-            return (left + xs[idx], top + ys[idx])
+            # --- Step 3: handle thin / bad shapes safely
+            if max_dist < 2:
+                ys, xs = np.where(blob)
+                idx = np.random.randint(len(xs))
+                return (left + xs[idx], top + ys[idx])
+
+            # --- Step 4: pick from top interior pixels (not just 1 point)
+            flat = dist.flatten()
+
+            # Top N deepest pixels (adaptive)
+            top_n = min(40, len(flat))
+            indices = np.argpartition(flat, -top_n)[-top_n:]
+
+            # Weighted randomness (favor deeper pixels)
+            weights = flat[indices]
+            weights = weights / (weights.sum() + 1e-6)
+
+            choice = np.random.choice(indices, p=weights)
+            y, x = np.unravel_index(choice, dist.shape)
+
+            # --- Step 5: tiny human-like jitter
+            x += int(np.random.normal(0, 1.5))
+            y += int(np.random.normal(0, 1.5))
+
+            x = np.clip(x, 0, width - 1)
+            y = np.clip(y, 0, height - 1)
+
+            return (left + x, top + y)
 
     @staticmethod
     def color_exists(region, color, tolerance=COLOR_TOLERANCE):
